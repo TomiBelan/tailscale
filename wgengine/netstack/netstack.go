@@ -748,6 +748,16 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 		r.Complete(true) // sends a RST
 		return
 	}
+	if !isTailscaleIP {
+		ns.logf("[tomi] isTailscaleIP is false, what?! %v", dialIP)
+		r.Complete(true)
+		return
+	}
+	if reqDetails.LocalPort != 80 && reqDetails.LocalPort != 22 {
+		ns.logf("[tomi] forbidden port %v", reqDetails.LocalPort)
+		r.Complete(true)
+		return
+	}
 	r.Complete(false)
 
 	// SetKeepAlive so that idle connections to peers that have forgotten about
@@ -815,6 +825,11 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 func (ns *Impl) forwardTCP(client *gonet.TCPConn, clientRemoteIP netaddr.IP, wq *waiter.Queue, dialAddr netaddr.IPPort) {
 	defer client.Close()
 	dialAddrStr := dialAddr.String()
+	network := "tcp"
+	if dialAddr.Port() == 80 {
+		network = "unix"
+		dialAddrStr = "/stuffmnt/burrow2/port80.sock"
+	}
 	if debugNetstack {
 		ns.logf("[v2] netstack: forwarding incoming connection to %s", dialAddrStr)
 	}
@@ -839,16 +854,18 @@ func (ns *Impl) forwardTCP(client *gonet.TCPConn, clientRemoteIP netaddr.IP, wq 
 		cancel()
 	}()
 	var stdDialer net.Dialer
-	server, err := stdDialer.DialContext(ctx, "tcp", dialAddrStr)
+	server, err := stdDialer.DialContext(ctx, network, dialAddrStr)
 	if err != nil {
 		ns.logf("netstack: could not connect to local server at %s: %v", dialAddrStr, err)
 		return
 	}
 	defer server.Close()
+	if network == "tcp" {
 	backendLocalAddr := server.LocalAddr().(*net.TCPAddr)
 	backendLocalIPPort, _ := netaddr.FromStdAddr(backendLocalAddr.IP, backendLocalAddr.Port, backendLocalAddr.Zone)
 	ns.e.RegisterIPPortIdentity(backendLocalIPPort, clientRemoteIP)
 	defer ns.e.UnregisterIPPortIdentity(backendLocalIPPort)
+	}
 	connClosed := make(chan error, 2)
 	go func() {
 		_, err := io.Copy(server, client)
@@ -866,6 +883,7 @@ func (ns *Impl) forwardTCP(client *gonet.TCPConn, clientRemoteIP netaddr.IP, wq 
 }
 
 func (ns *Impl) acceptUDP(r *udp.ForwarderRequest) {
+	return
 	sess := r.ID()
 	if debugNetstack {
 		ns.logf("[v2] UDP ForwarderRequest: %v", stringifyTEI(sess))
