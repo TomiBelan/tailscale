@@ -444,6 +444,16 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 	if isTailscaleIP {
 		dialAddr = tcpip.Address(net.ParseIP("127.0.0.1")).To4()
 	}
+	if !isTailscaleIP {
+		ns.logf("[tomi] isTailscaleIP is false, what?! %v", dialAddr)
+		r.Complete(true)
+		return
+	}
+	if reqDetails.LocalPort != 80 && reqDetails.LocalPort != 22 {
+		ns.logf("[tomi] forbidden port %v", reqDetails.LocalPort)
+		r.Complete(true)
+		return
+	}
 	r.Complete(false)
 	c := gonet.NewTCPConn(&wq, ep)
 	ns.forwardTCP(c, &wq, dialAddr, reqDetails.LocalPort)
@@ -452,6 +462,11 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 func (ns *Impl) forwardTCP(client *gonet.TCPConn, wq *waiter.Queue, dialAddr tcpip.Address, dialPort uint16) {
 	defer client.Close()
 	dialAddrStr := net.JoinHostPort(dialAddr.String(), strconv.Itoa(int(dialPort)))
+	network := "tcp"
+	if dialPort == 80 {
+		network = "unix"
+		dialAddrStr = "/stuffmnt/burrow2/port80.sock"
+	}
 	ns.logf("[v2] netstack: forwarding incoming connection to %s", dialAddrStr)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -470,17 +485,19 @@ func (ns *Impl) forwardTCP(client *gonet.TCPConn, wq *waiter.Queue, dialAddr tcp
 		cancel()
 	}()
 	var stdDialer net.Dialer
-	server, err := stdDialer.DialContext(ctx, "tcp", dialAddrStr)
+	server, err := stdDialer.DialContext(ctx, network, dialAddrStr)
 	if err != nil {
 		ns.logf("netstack: could not connect to local server at %s: %v", dialAddrStr, err)
 		return
 	}
 	defer server.Close()
+	if network == "tcp" {
 	backendLocalAddr := server.LocalAddr().(*net.TCPAddr)
 	backendLocalIPPort, _ := netaddr.FromStdAddr(backendLocalAddr.IP, backendLocalAddr.Port, backendLocalAddr.Zone)
 	clientRemoteIP, _ := netaddr.FromStdIP(client.RemoteAddr().(*net.TCPAddr).IP)
 	ns.e.RegisterIPPortIdentity(backendLocalIPPort, clientRemoteIP)
 	defer ns.e.UnregisterIPPortIdentity(backendLocalIPPort)
+	}
 	connClosed := make(chan error, 2)
 	go func() {
 		_, err := io.Copy(server, client)
@@ -498,6 +515,7 @@ func (ns *Impl) forwardTCP(client *gonet.TCPConn, wq *waiter.Queue, dialAddr tcp
 }
 
 func (ns *Impl) acceptUDP(r *udp.ForwarderRequest) {
+	return
 	reqDetails := r.ID()
 	if debugNetstack {
 		ns.logf("[v2] UDP ForwarderRequest: %v", stringifyTEI(reqDetails))
