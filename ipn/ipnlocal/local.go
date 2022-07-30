@@ -2203,9 +2203,12 @@ func (b *LocalBackend) authReconfig() {
 		b.logf("wgcfg: %v", err)
 		return
 	}
+	fmt.Fprintf(os.Stderr, "[TOMI] netmap: %#v  end\n", nm)
+	fmt.Fprintf(os.Stderr, "[TOMI] dns: %#v  end\n", nm.DNS)
 
 	rcfg := b.routerConfig(cfg, prefs, oneCGNATRoute)
 	dcfg := dnsConfigForNetmap(nm, prefs, b.logf, version.OS())
+	fmt.Fprintf(os.Stderr, "[TOMI] dcfg: %#v  end\n", dcfg)
 
 	err = b.e.Reconfig(cfg, rcfg, dcfg, nm.Debug)
 	if err == wgengine.ErrNoChanges {
