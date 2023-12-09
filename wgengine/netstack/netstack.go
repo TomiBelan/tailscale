@@ -59,6 +59,8 @@ const debugPackets = false
 
 var debugNetstack = envknob.RegisterBool("TS_DEBUG_NETSTACK")
 
+var port80env = os.Getenv("TOMI_TS_PORT80_SOCK")
+
 var (
 	magicDNSIP   = tsaddr.TailscaleServiceIP()
 	magicDNSIPv6 = tsaddr.TailscaleServiceIPv6()
@@ -872,6 +874,22 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 			r.Complete(true) // sends a RST
 			return nil
 		}
+		if !isTailscaleIP {
+			ns.logf("[tomi] isTailscaleIP is false, what?! %v", dialIP)
+			r.Complete(true)
+			return nil
+		}
+		lp := reqDetails.LocalPort
+		if !(lp == 22 || lp == 80 || (lp >= 5000 && lp < 6000)) {
+			ns.logf("[tomi] forbidden port %v", reqDetails.LocalPort)
+			r.Complete(true)
+			return nil
+		}
+		if lp == 80 && port80env == "" {
+			ns.logf("[tomi] port 80 sock not configured")
+			r.Complete(true)
+			return nil
+		}
 		r.Complete(false)
 		for _, opt := range opts {
 			ep.SetSockOpt(opt)
@@ -889,7 +907,7 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 		// as lingering connections to fork style daemons. On the other side of the
 		// fence, the long duration timers are low impact values for battery powered
 		// peers.
-		ep.SocketOptions().SetKeepAlive(true)
+		// ep.SocketOptions().SetKeepAlive(true) // removed to work around #5021
 
 		// The ForwarderRequest.CreateEndpoint above asynchronously
 		// starts the TCP handshake. Note that the gonet.TCPConn
@@ -951,6 +969,11 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 
 func (ns *Impl) forwardTCP(getClient func(...tcpip.SettableSocketOption) *gonet.TCPConn, clientRemoteIP netip.Addr, wq *waiter.Queue, dialAddr netip.AddrPort) (handled bool) {
 	dialAddrStr := dialAddr.String()
+	network := "tcp"
+	if dialAddr.Port() == 80 {
+		network = "unix"
+		dialAddrStr = port80env
+	}
 	if debugNetstack() {
 		ns.logf("[v2] netstack: forwarding incoming connection to %s", dialAddrStr)
 	}
@@ -978,7 +1001,7 @@ func (ns *Impl) forwardTCP(getClient func(...tcpip.SettableSocketOption) *gonet.
 
 	// Attempt to dial the outbound connection before we accept the inbound one.
 	var stdDialer net.Dialer
-	server, err := stdDialer.DialContext(ctx, "tcp", dialAddrStr)
+	server, err := stdDialer.DialContext(ctx, network, dialAddrStr)
 	if err != nil {
 		ns.logf("netstack: could not connect to local server at %s: %v", dialAddr.String(), err)
 		return
@@ -998,10 +1021,12 @@ func (ns *Impl) forwardTCP(getClient func(...tcpip.SettableSocketOption) *gonet.
 	}
 	defer client.Close()
 
+	if network == "tcp" {
 	backendLocalAddr := server.LocalAddr().(*net.TCPAddr)
 	backendLocalIPPort := netaddr.Unmap(backendLocalAddr.AddrPort())
 	ns.pm.RegisterIPPortIdentity(backendLocalIPPort, clientRemoteIP)
 	defer ns.pm.UnregisterIPPortIdentity(backendLocalIPPort)
+	}
 	connClosed := make(chan error, 2)
 	go func() {
 		_, err := io.Copy(server, client)
@@ -1020,6 +1045,7 @@ func (ns *Impl) forwardTCP(getClient func(...tcpip.SettableSocketOption) *gonet.
 }
 
 func (ns *Impl) acceptUDP(r *udp.ForwarderRequest) {
+	return
 	sess := r.ID()
 	if debugNetstack() {
 		ns.logf("[v2] UDP ForwarderRequest: %v", stringifyTEI(sess))
